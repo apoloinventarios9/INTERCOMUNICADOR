@@ -540,10 +540,9 @@
                             // Marcar mensajes históricos como procesados
                             processedMessages.add(messageId);
                             
-                            // Mostrar solo si NO es de este dispositivo
-                            if (senderDeviceId !== deviceId) {
-                                displayVoiceMessage(update.message, true);
-                            }
+                            // Mostrar TODOS los mensajes históricos (sin autoplay)
+                            const isOwnMessage = (senderDeviceId === deviceId);
+                            displayVoiceMessage(update.message, true, isOwnMessage);
                         }
                         lastUpdateId = Math.max(lastUpdateId, update.update_id);
                     }
@@ -565,13 +564,15 @@
                             const messageId = update.message.message_id;
                             const senderDeviceId = extractDeviceId(update.message);
                             
-                            // Solo procesar si no lo hemos visto y NO es de este dispositivo
-                            if (!processedMessages.has(messageId) && senderDeviceId !== deviceId) {
+                            // Procesar TODOS los mensajes nuevos (no duplicados)
+                            if (!processedMessages.has(messageId)) {
                                 processedMessages.add(messageId);
-                                displayVoiceMessage(update.message, false);
-                            } else if (!processedMessages.has(messageId)) {
-                                // Marcar como procesado aunque sea nuestro
-                                processedMessages.add(messageId);
+                                
+                                // Determinar si es propio o de otro dispositivo
+                                const isOwnMessage = (senderDeviceId === deviceId);
+                                
+                                // Mostrar el mensaje (autoplay solo si NO es propio)
+                                displayVoiceMessage(update.message, false, isOwnMessage);
                             }
                         }
                         lastUpdateId = update.update_id;
@@ -601,7 +602,7 @@
         }
 
         // Mostrar mensaje de voz
-        function displayVoiceMessage(message, isHistorical = false) {
+        function displayVoiceMessage(message, isHistorical = false, isOwnMessage = false) {
             const messagesContainer = document.getElementById('messages');
             
             // Remover mensaje de "no hay mensajes"
@@ -611,6 +612,12 @@
 
             const messageDiv = document.createElement('div');
             messageDiv.className = 'message';
+            
+            // Estilo diferente para mensajes propios
+            if (isOwnMessage) {
+                messageDiv.style.background = '#e8f5e9';
+                messageDiv.style.borderLeft = '4px solid #4caf50';
+            }
 
             const date = new Date(message.date * 1000);
             const timeString = date.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
@@ -619,13 +626,17 @@
             
             // Identificador visual breve del dispositivo
             const deviceShort = senderDeviceId ? senderDeviceId.substr(-6) : '------';
+            
+            // Icono diferente para mensajes propios
+            const icon = isOwnMessage ? '📤' : '🔊';
+            const label = isOwnMessage ? '(Tú)' : `(${deviceShort})`;
 
             messageDiv.innerHTML = `
                 <div class="message-header">
-                    <span><strong>🔊 ${senderName}</strong> <small style="color: #999;">(${deviceShort})</small></span>
+                    <span><strong>${icon} ${senderName}</strong> <small style="color: #999;">${label}</small></span>
                     <span>${timeString}</span>
                 </div>
-                <audio class="message-audio" controls ${isHistorical ? '' : 'autoplay'}>
+                <audio class="message-audio" controls>
                     <source src="" type="audio/ogg">
                     Tu navegador no soporta audio.
                 </audio>
@@ -633,8 +644,12 @@
 
             messagesContainer.insertBefore(messageDiv, messagesContainer.firstChild);
 
+            // Determinar si debe reproducirse automáticamente
+            // Solo autoplay si NO es histórico Y NO es mensaje propio
+            const shouldAutoplay = !isHistorical && !isOwnMessage;
+            
             // Obtener y reproducir el audio
-            getAudioFile(message.voice.file_id, messageDiv.querySelector('audio'), !isHistorical);
+            getAudioFile(message.voice.file_id, messageDiv.querySelector('audio'), shouldAutoplay);
 
             // Mantener solo los últimos 15 mensajes
             while (messagesContainer.children.length > 15) {
