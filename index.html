@@ -531,17 +531,25 @@
                 const response = await fetch(`https://api.telegram.org/bot${botToken}/getUpdates?limit=50&allowed_updates=["message"]`);
                 const data = await response.json();
 
+                console.log('Mensajes históricos recibidos:', data.result.length);
+
                 if (data.ok && data.result.length > 0) {
                     for (const update of data.result) {
+                        // MOSTRAR TODOS LOS MENSAJES DE VOZ sin excepción
                         if (update.message && update.message.voice) {
                             const messageId = update.message.message_id;
-                            const senderDeviceId = extractDeviceId(update.message);
                             
-                            // Marcar mensajes históricos como procesados
+                            // Marcar como procesado
                             processedMessages.add(messageId);
                             
-                            // Mostrar TODOS los mensajes históricos (sin autoplay)
-                            const isOwnMessage = (senderDeviceId === deviceId);
+                            // Extraer Device ID del caption
+                            const senderDeviceId = extractDeviceId(update.message);
+                            console.log('Mensaje histórico - Device:', senderDeviceId, 'Mi Device:', deviceId);
+                            
+                            // Determinar si es propio comparando Device IDs
+                            const isOwnMessage = (senderDeviceId && senderDeviceId === deviceId);
+                            
+                            // MOSTRAR TODOS (históricos no se reproducen automáticamente)
                             displayVoiceMessage(update.message, true, isOwnMessage);
                         }
                         lastUpdateId = Math.max(lastUpdateId, update.update_id);
@@ -560,18 +568,22 @@
 
                 if (data.ok && data.result.length > 0) {
                     for (const update of data.result) {
+                        // PROCESAR TODOS LOS MENSAJES DE VOZ
                         if (update.message && update.message.voice) {
                             const messageId = update.message.message_id;
-                            const senderDeviceId = extractDeviceId(update.message);
                             
-                            // Procesar TODOS los mensajes nuevos (no duplicados)
+                            // Solo procesar mensajes nuevos (evitar duplicados)
                             if (!processedMessages.has(messageId)) {
                                 processedMessages.add(messageId);
                                 
-                                // Determinar si es propio o de otro dispositivo
-                                const isOwnMessage = (senderDeviceId === deviceId);
+                                // Extraer Device ID del caption
+                                const senderDeviceId = extractDeviceId(update.message);
+                                console.log('Nuevo mensaje - Device:', senderDeviceId, 'Mi Device:', deviceId, 'Caption:', update.message.caption);
                                 
-                                // Mostrar el mensaje (autoplay solo si NO es propio)
+                                // Determinar si es propio comparando Device IDs
+                                const isOwnMessage = (senderDeviceId && senderDeviceId === deviceId);
+                                
+                                // MOSTRAR TODOS (reproducir automáticamente solo los de otros)
                                 displayVoiceMessage(update.message, false, isOwnMessage);
                             }
                         }
@@ -586,24 +598,35 @@
         // Extraer Device ID del caption del mensaje
         function extractDeviceId(message) {
             if (message.caption) {
+                // Buscar el patrón [DEV_...] en el caption
                 const match = message.caption.match(/\[(DEV_[^\]]+)\]/);
-                return match ? match[1] : null;
+                if (match) {
+                    console.log('Device ID extraído:', match[1]);
+                    return match[1];
+                }
             }
+            console.log('No se encontró Device ID en caption:', message.caption);
             return null;
         }
 
         // Extraer nombre de usuario del caption
         function extractUserName(message) {
             if (message.caption) {
+                // Buscar el patrón "👤 Nombre [DEV_...]"
                 const match = message.caption.match(/👤\s+([^\[]+)/);
-                return match ? match[1].trim() : 'Usuario';
+                if (match) {
+                    return match[1].trim();
+                }
             }
-            return message.from?.first_name || 'Usuario';
+            // Fallback: usar el nombre de Telegram del remitente
+            return message.from?.first_name || 'Usuario Desconocido';
         }
 
         // Mostrar mensaje de voz
         function displayVoiceMessage(message, isHistorical = false, isOwnMessage = false) {
             const messagesContainer = document.getElementById('messages');
+            
+            console.log('Mostrando mensaje - Histórico:', isHistorical, 'Propio:', isOwnMessage);
             
             // Remover mensaje de "no hay mensajes"
             if (messagesContainer.querySelector('.info-text')) {
@@ -625,7 +648,7 @@
             const senderDeviceId = extractDeviceId(message);
             
             // Identificador visual breve del dispositivo
-            const deviceShort = senderDeviceId ? senderDeviceId.substr(-6) : '------';
+            const deviceShort = senderDeviceId ? senderDeviceId.substr(-6) : 'bot';
             
             // Icono diferente para mensajes propios
             const icon = isOwnMessage ? '📤' : '🔊';
@@ -647,6 +670,8 @@
             // Determinar si debe reproducirse automáticamente
             // Solo autoplay si NO es histórico Y NO es mensaje propio
             const shouldAutoplay = !isHistorical && !isOwnMessage;
+            
+            console.log('Autoplay activado:', shouldAutoplay);
             
             // Obtener y reproducir el audio
             getAudioFile(message.voice.file_id, messageDiv.querySelector('audio'), shouldAutoplay);
