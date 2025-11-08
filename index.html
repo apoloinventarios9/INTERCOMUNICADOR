@@ -276,12 +276,19 @@
         <!-- Sección de Configuración -->
         <div class="config-section" id="configSection">
             <div class="input-group">
+                <label for="userName">Tu Nombre de Usuario</label>
+                <input type="text" id="userName" placeholder="Ej: Juan, PC-Oficina, Móvil-123">
+            </div>
+            <div class="input-group">
                 <label for="botToken">Token del Bot de Telegram</label>
                 <input type="password" id="botToken" placeholder="123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11">
             </div>
             <div class="input-group">
                 <label for="chatId">ID del Chat/Grupo</label>
                 <input type="text" id="chatId" placeholder="-1001234567890">
+            </div>
+            <div style="background: #e3f2fd; padding: 10px; border-radius: 8px; margin-bottom: 15px; font-size: 13px;">
+                <strong>ℹ️ ID de dispositivo:</strong> <span id="deviceIdDisplay">Generando...</span>
             </div>
             <button class="btn btn-primary" onclick="initializeBot()">Conectar</button>
         </div>
@@ -331,17 +338,33 @@
         let lastUpdateId = 0;
         let isRecording = false;
         let checkInterval = null;
+        let deviceId = '';
+        let userName = '';
+        let processedMessages = new Set(); // Para evitar duplicados
+
+        // Generar o recuperar ID único de dispositivo
+        function getDeviceId() {
+            let id = localStorage.getItem('deviceId');
+            if (!id) {
+                // Generar ID único basado en timestamp y random
+                id = 'DEV_' + Date.now().toString(36) + '_' + Math.random().toString(36).substr(2, 9);
+                localStorage.setItem('deviceId', id);
+            }
+            return id;
+        }
 
         // Inicializar el bot
         async function initializeBot() {
             const tokenInput = document.getElementById('botToken');
             const chatIdInput = document.getElementById('chatId');
+            const userNameInput = document.getElementById('userName');
 
             botToken = tokenInput.value.trim();
             chatId = chatIdInput.value.trim();
+            userName = userNameInput.value.trim() || 'Usuario-' + deviceId.substr(-6);
 
             if (!botToken || !chatId) {
-                showAlert('Por favor, completa todos los campos', 'error');
+                showAlert('Por favor, completa el token y el ID del chat', 'error');
                 return;
             }
 
@@ -357,15 +380,19 @@
                 // Guardar en localStorage
                 localStorage.setItem('botToken', botToken);
                 localStorage.setItem('chatId', chatId);
+                localStorage.setItem('userName', userName);
 
                 // Cambiar a sección principal
                 document.getElementById('configSection').classList.add('hidden');
                 document.getElementById('mainSection').classList.remove('hidden');
 
-                updateStatus(true, `Conectado como @${data.result.username}`);
+                updateStatus(true, `Conectado como: ${userName}`);
                 
                 // Solicitar permiso de micrófono
                 await requestMicrophonePermission();
+
+                // Cargar mensajes históricos primero
+                await loadHistoricalMessages();
 
                 // Iniciar comprobación automática de mensajes
                 startAutoCheck();
@@ -472,6 +499,10 @@
                 const formData = new FormData();
                 formData.append('chat_id', chatId);
                 formData.append('voice', audioBlob, 'voice.ogg');
+                
+                // Agregar caption con identificación de usuario y dispositivo
+                const caption = `👤 ${userName} [${deviceId}]`;
+                formData.append('caption', caption);
 
                 const response = await fetch(`https://api.telegram.org/bot${botToken}/sendVoice`, {
                     method: 'POST',
@@ -481,7 +512,9 @@
                 const data = await response.json();
 
                 if (data.ok) {
-                    showAlert('Mensaje enviado', 'success');
+                    // Marcar este mensaje como procesado (es nuestro)
+                    processedMessages.add(data.result.message_id);
+                    showAlert('✅ Mensaje enviado', 'success');
                     setTimeout(() => checkNewMessages(), 500);
                 } else {
                     throw new Error(data.description || 'Error al enviar');
@@ -489,6 +522,34 @@
 
             } catch (error) {
                 showAlert('Error al enviar: ' + error.message, 'error');
+            }
+        }
+
+        // Cargar mensajes históricos (últimos 50)
+        async function loadHistoricalMessages() {
+            try {
+                const response = await fetch(`https://api.telegram.org/bot${botToken}/getUpdates?limit=50&allowed_updates=["message"]`);
+                const data = await response.json();
+
+                if (data.ok && data.result.length > 0) {
+                    for (const update of data.result) {
+                        if (update.message && update.message.voice) {
+                            const messageId = update.message.message_id;
+                            const senderDeviceId = extractDeviceId(update.message);
+                            
+                            // Marcar mensajes históricos como procesados
+                            processedMessages.add(messageId);
+                            
+                            // Mostrar solo si NO es de este dispositivo
+                            if (senderDeviceId !== deviceId) {
+                                displayVoiceMessage(update.message, true);
+                            }
+                        }
+                        lastUpdateId = Math.max(lastUpdateId, update.update_id);
+                    }
+                }
+            } catch (error) {
+                console.error('Error al cargar mensajes históricos:', error);
             }
         }
 
@@ -501,7 +562,17 @@
                 if (data.ok && data.result.length > 0) {
                     for (const update of data.result) {
                         if (update.message && update.message.voice) {
-                            displayVoiceMessage(update.message);
+                            const messageId = update.message.message_id;
+                            const senderDeviceId = extractDeviceId(update.message);
+                            
+                            // Solo procesar si no lo hemos visto y NO es de este dispositivo
+                            if (!processedMessages.has(messageId) && senderDeviceId !== deviceId) {
+                                processedMessages.add(messageId);
+                                displayVoiceMessage(update.message, false);
+                            } else if (!processedMessages.has(messageId)) {
+                                // Marcar como procesado aunque sea nuestro
+                                processedMessages.add(messageId);
+                            }
                         }
                         lastUpdateId = update.update_id;
                     }
@@ -511,8 +582,26 @@
             }
         }
 
+        // Extraer Device ID del caption del mensaje
+        function extractDeviceId(message) {
+            if (message.caption) {
+                const match = message.caption.match(/\[(DEV_[^\]]+)\]/);
+                return match ? match[1] : null;
+            }
+            return null;
+        }
+
+        // Extraer nombre de usuario del caption
+        function extractUserName(message) {
+            if (message.caption) {
+                const match = message.caption.match(/👤\s+([^\[]+)/);
+                return match ? match[1].trim() : 'Usuario';
+            }
+            return message.from?.first_name || 'Usuario';
+        }
+
         // Mostrar mensaje de voz
-        function displayVoiceMessage(message) {
+        function displayVoiceMessage(message, isHistorical = false) {
             const messagesContainer = document.getElementById('messages');
             
             // Remover mensaje de "no hay mensajes"
@@ -525,14 +614,18 @@
 
             const date = new Date(message.date * 1000);
             const timeString = date.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
-            const userName = message.from.first_name || 'Usuario';
+            const senderName = extractUserName(message);
+            const senderDeviceId = extractDeviceId(message);
+            
+            // Identificador visual breve del dispositivo
+            const deviceShort = senderDeviceId ? senderDeviceId.substr(-6) : '------';
 
             messageDiv.innerHTML = `
                 <div class="message-header">
-                    <span><strong>${userName}</strong></span>
+                    <span><strong>🔊 ${senderName}</strong> <small style="color: #999;">(${deviceShort})</small></span>
                     <span>${timeString}</span>
                 </div>
-                <audio class="message-audio" controls autoplay>
+                <audio class="message-audio" controls ${isHistorical ? '' : 'autoplay'}>
                     <source src="" type="audio/ogg">
                     Tu navegador no soporta audio.
                 </audio>
@@ -541,16 +634,16 @@
             messagesContainer.insertBefore(messageDiv, messagesContainer.firstChild);
 
             // Obtener y reproducir el audio
-            getAudioFile(message.voice.file_id, messageDiv.querySelector('audio'));
+            getAudioFile(message.voice.file_id, messageDiv.querySelector('audio'), !isHistorical);
 
-            // Mantener solo los últimos 10 mensajes
-            while (messagesContainer.children.length > 10) {
+            // Mantener solo los últimos 15 mensajes
+            while (messagesContainer.children.length > 15) {
                 messagesContainer.removeChild(messagesContainer.lastChild);
             }
         }
 
         // Obtener archivo de audio
-        async function getAudioFile(fileId, audioElement) {
+        async function getAudioFile(fileId, audioElement, shouldAutoplay = true) {
             try {
                 const response = await fetch(`https://api.telegram.org/bot${botToken}/getFile?file_id=${fileId}`);
                 const data = await response.json();
@@ -559,10 +652,13 @@
                     const fileUrl = `https://api.telegram.org/file/bot${botToken}/${data.result.file_path}`;
                     audioElement.src = fileUrl;
                     
-                    // Reproducir automáticamente
-                    audioElement.play().catch(e => {
-                        console.log('Autoplay bloqueado:', e);
-                    });
+                    // Reproducir automáticamente solo si es un mensaje nuevo
+                    if (shouldAutoplay) {
+                        audioElement.play().catch(e => {
+                            console.log('Autoplay bloqueado (requiere interacción del usuario):', e);
+                            showAlert('🔊 Nuevo mensaje de voz recibido', 'success');
+                        });
+                    }
                 }
             } catch (error) {
                 console.error('Error al obtener audio:', error);
@@ -606,12 +702,24 @@
 
         // Cargar configuración guardada al iniciar
         window.addEventListener('load', () => {
+            // Generar o recuperar Device ID
+            deviceId = getDeviceId();
+            document.getElementById('deviceIdDisplay').textContent = deviceId;
+
             const savedToken = localStorage.getItem('botToken');
             const savedChatId = localStorage.getItem('chatId');
+            const savedUserName = localStorage.getItem('userName');
 
             if (savedToken && savedChatId) {
                 document.getElementById('botToken').value = savedToken;
                 document.getElementById('chatId').value = savedChatId;
+            }
+
+            if (savedUserName) {
+                document.getElementById('userName').value = savedUserName;
+            } else {
+                // Sugerir nombre basado en el dispositivo
+                document.getElementById('userName').value = 'Usuario-' + deviceId.substr(-6);
             }
         });
 
